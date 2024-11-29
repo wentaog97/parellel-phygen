@@ -10,6 +10,8 @@
 
 using namespace std;
 
+const double LARGE_DISTANCE = 1e6;
+
 // Structure to represent a node in the phylogenetic tree
 struct Node {
     string name;         // Name of the taxon or cluster
@@ -35,6 +37,8 @@ void readDistanceMatrix(const string& filename,
         exit(1);
     }
 
+    const double LARGE_DISTANCE = 1e6; // Define a large distance value
+
     string line;
     while (getline(infile, line)) {
         if (line.empty())
@@ -46,8 +50,19 @@ void readDistanceMatrix(const string& filename,
         taxa_names.push_back(name);
 
         vector<double> row;
-        double dist;
-        while (iss >> dist) {
+        string token;
+        while (iss >> token) {
+            double dist;
+            if (token == "N/A" || token == "n/a") {
+                dist = LARGE_DISTANCE; // Replace "N/A" with a large distance
+            } else {
+                // Convert the token to a double
+                istringstream token_stream(token);
+                if (!(token_stream >> dist)) {
+                    cerr << "Error: Invalid distance value '" << token << "' in the distance matrix." << endl;
+                    exit(1);
+                }
+            }
             row.push_back(dist);
         }
         distances.push_back(row);
@@ -83,38 +98,49 @@ void deleteTree(Node* node) {
     delete node;
 }
 
-// UPGMA algorithm implementation
 void UPGMA(vector<string>& taxa_names,
            vector<vector<double>>& distances) {
     int n = taxa_names.size();
-    vector<Node*> clusters;
+    vector<Node*> nodes;
 
     // Initialize clusters with individual taxa
     for (int i = 0; i < n; ++i) {
-        clusters.push_back(new Node(taxa_names[i]));
+        nodes.push_back(new Node(taxa_names[i]));
     }
 
     vector<vector<double>> D = distances;  // Copy of the distance matrix
 
-    while (clusters.size() > 1) {
-        int m = clusters.size();
+    // Ensure D is square and symmetric
+    for (int i = 0; i < n; ++i) {
+        D[i].resize(n, 0.0);
+    }
+
+    vector<int> active_indices;
+    for (int i = 0; i < n; ++i) {
+        active_indices.push_back(i);
+    }
+
+    while (active_indices.size() > 1) {
+        int m = active_indices.size();
 
         // Find the pair of clusters with the smallest distance
         double min_dist = numeric_limits<double>::max();
         int min_i = -1, min_j = -1;
-        for (int i = 0; i < m - 1; ++i) {
-            for (int j = i + 1; j < m; ++j) {
-                if (D[i][j] < min_dist) {
-                    min_dist = D[i][j];
-                    min_i = i;
-                    min_j = j;
+        for (int ii = 0; ii < m - 1; ++ii) {
+            int idx_i = active_indices[ii];
+            for (int jj = ii + 1; jj < m; ++jj) {
+                int idx_j = active_indices[jj];
+                if (D[idx_i][idx_j] < min_dist) {
+                    min_dist = D[idx_i][idx_j];
+                    min_i = idx_i;
+                    min_j = idx_j;
                 }
             }
         }
 
         // Merge clusters[min_i] and clusters[min_j]
-        Node* cluster_i = clusters[min_i];
-        Node* cluster_j = clusters[min_j];
+        Node* cluster_i = nodes[min_i];
+        Node* cluster_j = nodes[min_j];
 
         // Create new cluster
         Node* new_cluster = new Node("");
@@ -132,42 +158,44 @@ void UPGMA(vector<string>& taxa_names,
         // Update size
         new_cluster->size = cluster_i->size + cluster_j->size;
 
-        // Remove the merged clusters and add the new cluster
-        clusters.erase(clusters.begin() + max(min_i, min_j));
-        clusters.erase(clusters.begin() + min(min_i, min_j));
-        clusters.push_back(new_cluster);
+        // Add new cluster to nodes
+        nodes.push_back(new_cluster);
+        int new_idx = nodes.size() - 1;
 
-        // Update the distance matrix
-        // Remove rows and columns corresponding to clusters[min_i] and clusters[min_j]
-        D.erase(D.begin() + max(min_i, min_j));
-        D.erase(D.begin() + min(min_i, min_j));
-        for (auto& row : D) {
-            row.erase(row.begin() + max(min_i, min_j));
-            row.erase(row.begin() + min(min_i, min_j));
+        // Resize D to add new row and column
+        int D_size = D.size();
+        for (int i = 0; i < D_size; ++i) {
+            D[i].resize(D_size + 1, 0.0);
+        }
+        D.push_back(vector<double>(D_size + 1, 0.0));
+
+        // Compute distances between the new cluster and other active clusters
+        for (int idx_k : active_indices) {
+            if (idx_k == min_i || idx_k == min_j)
+                continue;
+            Node* cluster_k = nodes[idx_k];
+            double dist = (D[min_i][idx_k] * cluster_i->size + D[min_j][idx_k] * cluster_j->size) / (cluster_i->size + cluster_j->size);
+
+            // Update D[new_idx][idx_k] and D[idx_k][new_idx]
+            D[new_idx][idx_k] = dist;
+            D[idx_k][new_idx] = dist;
         }
 
-        // Calculate distances between the new cluster and the remaining clusters
-        vector<double> new_dist_row;
-        for (int k = 0; k < clusters.size() - 1; ++k) {
-            double dist = (D[k][k] * clusters[k]->size + D[k][k] * clusters[k]->size) / (clusters[k]->size + clusters[k]->size);
-            dist = (D[k][clusters.size() - 1] * clusters[k]->size + D[k][clusters.size() - 1] * clusters[k]->size) / (clusters[k]->size + clusters[k]->size);
-            dist = (D[k][k] * clusters[k]->size + min_dist * clusters[k]->size) / (clusters[k]->size + new_cluster->size);
-
-            // Calculate average distance
-            double dist_ik = (D[k][min_i] * cluster_i->size + D[k][min_j] * cluster_j->size) / (cluster_i->size + cluster_j->size);
-            new_dist_row.push_back(dist_ik);
-        }
-        new_dist_row.push_back(0.0);  // Distance to itself is zero
-
-        // Add the new distances to the matrix
+        // Mark distances of merged clusters as inactive
         for (int i = 0; i < D.size(); ++i) {
-            D[i].push_back(new_dist_row[i]);
+            D[min_i][i] = D[i][min_i] = numeric_limits<double>::max();
+            D[min_j][i] = D[i][min_j] = numeric_limits<double>::max();
         }
-        D.push_back(new_dist_row);
+
+        // Update active indices
+        active_indices.erase(remove(active_indices.begin(), active_indices.end(), min_i), active_indices.end());
+        active_indices.erase(remove(active_indices.begin(), active_indices.end(), min_j), active_indices.end());
+        active_indices.push_back(new_idx);
     }
 
     // The last remaining cluster is the root
-    Node* root = clusters[0];
+    int root_idx = active_indices[0];
+    Node* root = nodes[root_idx];
 
     // Output the tree in Newick format
     string newick_tree = buildNewick(root) + ";";
