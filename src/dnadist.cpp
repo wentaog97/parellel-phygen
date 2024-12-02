@@ -47,7 +47,8 @@ double computeDistance(const string& seq1, const string& seq2) {
 
 int main() {
     // Open the input file
-    ifstream inputFile("seqs1");
+    string input = "seq";
+    ifstream inputFile(input);
     if (!inputFile.is_open()) {
         cerr << "Error: Could not open the input file 'seqs'." << endl;
         return 1;
