@@ -1,4 +1,3 @@
-package java;
 import java.io.*;
 import java.util.*;
 import java.text.DecimalFormat;
@@ -230,11 +229,18 @@ public class UPGMA {
     }
 
     public static void main(String[] args) {
+        if (args.length == 0) {
+            System.out.println("Proper Usage is: java program filename");
+            System.exit(0);
+        }
+        
         List<String> taxaNames = new ArrayList<>();
         List<List<Double>> distances = new ArrayList<>();
 
+        String filePath = args[0];
+
         // Read the distance matrix from the file "DistanceMatrix"
-        readDistanceMatrix("DistanceMatrix", taxaNames, distances);
+        readDistanceMatrix(filePath, taxaNames, distances);
 
         // Perform UPGMA algorithm
         UPGMA(taxaNames, distances);

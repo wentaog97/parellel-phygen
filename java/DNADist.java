@@ -1,4 +1,3 @@
-package java;
 import java.io.*;
 import java.util.*;
 import java.text.DecimalFormat;
@@ -50,7 +49,13 @@ public class DNADist {
     }
 
     public static void main(String[] args) {
-        String input = "seq";
+        
+        if (args.length == 0) {
+            System.out.println("Proper Usage is: java program filename");
+            System.exit(0);
+        }
+
+        String input = args[0];
         BufferedReader inputFile = null;
         try {
             inputFile = new BufferedReader(new FileReader(input));
