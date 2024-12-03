@@ -1,4 +1,3 @@
-//package java;
 import java.io.*;
 import java.util.*;
 import java.text.DecimalFormat;
@@ -50,7 +49,12 @@ public class DNADist {
     }
 
     public static void main(String[] args) {
-        String input = "seq";
+
+        // start timer
+        long startTime = System.currentTimeMillis();
+
+        // input file name
+        String input = "large_seq";
         BufferedReader inputFile = null;
         try {
             inputFile = new BufferedReader(new FileReader(input));
@@ -132,5 +136,10 @@ public class DNADist {
                 }
             }
         }
+
+        // stop timer and print time
+        long endTime = System.currentTimeMillis();
+        long elapsedTime = endTime - startTime;
+        System.err.printf("Elapsed time: %.3f seconds %n", elapsedTime / 1000.0);
     }
 }
