@@ -2,65 +2,58 @@ import mpi.*;
 import java.io.*;
 import java.util.*;
 import java.text.DecimalFormat;
-
 class Sequence {
     String name;
     String data;
-
     Sequence(String name, String data) {
         this.name = name;
         this.data = data;
     }
 }
-
 public class DNADist {
-
     public static double computeDistance(String seq1, String seq2) {
         int differences = 0;
         int total = 0;
-
         for (int i = 0; i < seq1.length(); ++i) {
             char base1 = Character.toUpperCase(seq1.charAt(i));
             char base2 = Character.toUpperCase(seq2.charAt(i));
-
             // Only compare valid nucleotide pairs (A, C, G, T)
             if ((base1 == 'A' || base1 == 'C' || base1 == 'G' || base1 == 'T') &&
                 (base2 == 'A' || base2 == 'C' || base2 == 'G' || base2 == 'T')) {
                 total++;
-
                 if (base1 != base2) {
                     differences++;
                 }
             }
         }
-
         if (total == 0) {
             return -1.0;  // No valid overlap
         }
-
         double p = (double) differences / total;
-
         // Check for the maximum p value for which the model is defined
         if (p >= 0.75) {
             return -1.0;  // Infinite distance
         }
-
         double distance = -0.75 * Math.log(1.0 - (4.0 / 3.0) * p);
         return distance;
     }
 
+    public static void initializeFullMatrix(double[][] matrix) {
+        for (int i = 0; i < matrix.length; i++) {
+            for (int j = 0; j < matrix[i].length; j++) {
+                matrix[i][j] = -1.0;
+            }
+        }
+    }
+
     public static void main(String[] args) throws MPIException {
-        
         MPI.Init(args);  // Initialize the MPI environment
         int rank = MPI.COMM_WORLD.Rank();  // Get the rank of the process
         int size = MPI.COMM_WORLD.Size();  // Get the total number of processes
-
         long startTime = 0; 
         long endTime = 0; 
-
-        // start timer
+        // start timer for root process
         if (rank == 0) startTime = System.currentTimeMillis();
-
         // input file name
         String input = "seq";
         BufferedReader inputFile = null;
@@ -79,9 +72,7 @@ public class DNADist {
             }
             int numSequences = Integer.parseInt(tokens[0]);
             int sequenceLength = Integer.parseInt(tokens[1]);
-
             List<Sequence> sequences = new ArrayList<>();
-
             // Read the sequences
             for (int i = 0; i < numSequences; ++i) {
                 line = inputFile.readLine();
@@ -99,33 +90,76 @@ public class DNADist {
                 sequences.add(new Sequence(name, data));
             }
             inputFile.close();
+            // This section is for splitting the matrix computation work
+            int rowsPerProcess = numSequences / size;
+            int remainder = numSequences % size;
+            int startRow = rank * rowsPerProcess + Math.min(rank, remainder);
+            int endRow = (rank + 1) * rowsPerProcess + Math.min(rank + 1, remainder);
+            if (rank == size - 1) {
+                endRow = numSequences;
+            }
 
-            // Initialize the distance matrix
-            double[][] distanceMatrix = new double[numSequences][numSequences];
-
-            // Compute distances between each pair of sequences
-            for (int i = 0; i < numSequences; ++i) {
+            // Compute part of the matrix for this rank
+            double[][] localMatrix = new double[numSequences][numSequences];
+            for (int i = startRow; i < endRow; ++i) {
                 for (int j = i + 1; j < numSequences; ++j) {
                     double distance = computeDistance(sequences.get(i).data, sequences.get(j).data);
-                    distanceMatrix[i][j] = distance;
-                    distanceMatrix[j][i] = distance;
+                    localMatrix[i][j] = distance;
+                    localMatrix[j][i] = distance;
                 }
             }
+            
+            // Only allocate fullMatrix on root process
+            double[][] fullMatrix = null;
+            if (rank == 0) {
+                fullMatrix = new double[numSequences][numSequences];
+                initializeFullMatrix(fullMatrix);
+            }
 
-            // Output the distance matrix
-            DecimalFormat df = new DecimalFormat("0.0000");
-            for (int i = 0; i < numSequences; ++i) {
-                System.out.printf("%10s ", sequences.get(i).name);
-                for (int j = 0; j < numSequences; ++j) {
-                    if (distanceMatrix[i][j] == -1.0) {
-                        System.out.printf("%8s", "N/A");  // No valid distance
-                    } else {
-                        System.out.printf("%8s", df.format(distanceMatrix[i][j]));
+            // non-blocking communication
+            Request[] requests = new Request[numSequences];  // Requests for rows
+
+            if (rank != 0) {
+                // Non-root ranks send rows
+                for (int i = 0; i < (endRow - startRow); i++) {
+                    MPI.COMM_WORLD.Isend(localMatrix[i], 0, numSequences, MPI.DOUBLE, 0, startRow + i);
+                }
+            } else {
+                // Root process receives its own data into fullMatrix
+                for (int i = startRow; i < endRow; i++) {
+                    fullMatrix[i] = Arrays.copyOf(localMatrix[i - startRow], numSequences);
+                }
+
+                // Root process: receive data from other ranks
+                for (int src = 1; src < size; src++) {
+                    int startRowRecv = src * rowsPerProcess + Math.min(src, remainder);
+                    int endRowRecv = (src + 1) * rowsPerProcess + Math.min(src + 1, remainder);
+
+                    for (int i = startRowRecv; i < endRowRecv; i++) {
+                        double[] rowBuffer = new double[numSequences];
+                        requests[i] = MPI.COMM_WORLD.Irecv(rowBuffer, 0, numSequences, MPI.DOUBLE, src, i);
+                        requests[i].Wait();
+                        fullMatrix[i] = rowBuffer;
                     }
                 }
-                System.out.println();
             }
 
+            // Print the matrix on root process
+            if (rank == 0) {
+                // Print the full distance matrix
+                DecimalFormat df = new DecimalFormat("0.0000");
+                for (int i = 0; i < numSequences; ++i) {
+                    System.out.printf("%10s ", sequences.get(i).name);
+                    for (int j = 0; j < numSequences; ++j) {
+                        if (fullMatrix[i][j] == -1.0) {
+                            System.out.printf("%8s", "N/A");
+                        } else {
+                            System.out.printf("%8s", df.format(fullMatrix[i][j]));
+                        }
+                    }
+                    System.out.println();
+                }
+            }
         } catch (FileNotFoundException e) {
             System.err.println("Error: Could not open the input file 'seq'.");
             e.printStackTrace();
@@ -144,15 +178,12 @@ public class DNADist {
                 }
             }
         }
-
-        // stop timer and print time
+        // stop timer and print time for root process
         if (rank == 0) {
             endTime = System.currentTimeMillis();
             long elapsedTime = endTime - startTime;
             System.err.printf("Elapsed time: %.3f seconds %n", elapsedTime / 1000.0);
         }
-        
-
         MPI.Finalize();
     }
 }
