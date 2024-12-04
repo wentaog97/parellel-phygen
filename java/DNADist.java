@@ -1,3 +1,4 @@
+import mpi.*;
 import java.io.*;
 import java.util.*;
 import java.text.DecimalFormat;
@@ -48,13 +49,20 @@ public class DNADist {
         return distance;
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws MPIException {
+        
+        MPI.Init(args);  // Initialize the MPI environment
+        int rank = MPI.COMM_WORLD.Rank();  // Get the rank of the process
+        int size = MPI.COMM_WORLD.Size();  // Get the total number of processes
+
+        long startTime = 0; 
+        long endTime = 0; 
 
         // start timer
-        long startTime = System.currentTimeMillis();
+        if (rank == 0) startTime = System.currentTimeMillis();
 
         // input file name
-        String input = "large_seq";
+        String input = "seq";
         BufferedReader inputFile = null;
         try {
             inputFile = new BufferedReader(new FileReader(input));
@@ -138,8 +146,13 @@ public class DNADist {
         }
 
         // stop timer and print time
-        long endTime = System.currentTimeMillis();
-        long elapsedTime = endTime - startTime;
-        System.err.printf("Elapsed time: %.3f seconds %n", elapsedTime / 1000.0);
+        if (rank == 0) {
+            endTime = System.currentTimeMillis();
+            long elapsedTime = endTime - startTime;
+            System.err.printf("Elapsed time: %.3f seconds %n", elapsedTime / 1000.0);
+        }
+        
+
+        MPI.Finalize();
     }
 }
