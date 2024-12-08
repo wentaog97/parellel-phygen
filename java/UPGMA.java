@@ -1,21 +1,19 @@
-//package java;
+import mpi.*;
 import java.io.*;
 import java.util.*;
 import java.text.DecimalFormat;
 
 public class UPGMA {
 
-    static final double LARGE_DISTANCE = 1e6;  // A large value to replace "N/A" distances
+    static final double LARGE_DISTANCE = 1e6;
 
     // Class to represent a node in the phylogenetic tree
     static class Node {
-        String name;               // Name of the taxon or cluster
-        Node left;                 // Left child
-        Node right;                // Right child
-        double branchLengthLeft;   // Branch length to left child
-        double branchLengthRight;  // Branch length to right child
-        double height;             // Height of the node in the tree
-        int size;                  // Number of taxa in the cluster
+        String name;
+        Node left, right;
+        double branchLengthLeft, branchLengthRight;
+        double height;
+        int size;
 
         Node(String name) {
             this.name = name;
@@ -28,36 +26,19 @@ public class UPGMA {
         }
     }
 
-    // Function to read the distance matrix from the file
+    // Read the distance matrix from file (same as before)
     public static void readDistanceMatrix(String filename, List<String> taxaNames, List<List<Double>> distances) {
         try (BufferedReader br = new BufferedReader(new FileReader(filename))) {
             String line;
             while ((line = br.readLine()) != null) {
-                if (line.trim().isEmpty())
-                    continue;
-
+                if (line.trim().isEmpty()) continue;
                 String[] tokens = line.trim().split("\\s+");
-                if (tokens.length == 0)
-                    continue;
-
                 String name = tokens[0];
                 taxaNames.add(name);
-
                 List<Double> row = new ArrayList<>();
                 for (int i = 1; i < tokens.length; i++) {
                     String token = tokens[i];
-                    double dist;
-                    if (token.equalsIgnoreCase("N/A")) {
-                        dist = LARGE_DISTANCE;  // Replace "N/A" with a large distance
-                    } else {
-                        try {
-                            dist = Double.parseDouble(token);
-                        } catch (NumberFormatException e) {
-                            System.err.println("Error: Invalid distance value '" + token + "' in the distance matrix.");
-                            System.exit(1);
-                            return;
-                        }
-                    }
+                    double dist = token.equalsIgnoreCase("N/A") ? LARGE_DISTANCE : Double.parseDouble(token);
                     row.add(dist);
                 }
                 distances.add(row);
@@ -68,35 +49,21 @@ public class UPGMA {
         }
     }
 
-    // Function to output the tree in Newick format
+    // Build Newick format tree (same as before)
     public static String buildNewick(Node node) {
-        if (node == null)
-            return "";
-
-        if (node.left == null && node.right == null) {
-            // Leaf node
-            return node.name;
-        } else {
-            // Internal node
+        if (node == null) return "";
+        if (node.left == null && node.right == null) return node.name;
+        else {
             String leftSubtree = buildNewick(node.left);
             String rightSubtree = buildNewick(node.right);
-            StringBuilder sb = new StringBuilder();
-            DecimalFormat df = new DecimalFormat("0.######");  // Format branch lengths
-            sb.append("(")
-              .append(leftSubtree)
-              .append(":")
-              .append(df.format(node.branchLengthLeft))
-              .append(",")
-              .append(rightSubtree)
-              .append(":")
-              .append(df.format(node.branchLengthRight))
-              .append(")");
-            return sb.toString();
+            DecimalFormat df = new DecimalFormat("0.######");
+            return "(" + leftSubtree + ":" + df.format(node.branchLengthLeft) + "," +
+                   rightSubtree + ":" + df.format(node.branchLengthRight) + ")";
         }
     }
 
-    // UPGMA algorithm implementation
-    public static void UPGMA(List<String> taxaNames, List<List<Double>> distances) {
+    // UPGMA algorithm with MPI parallelization
+    public static void UPGMA(List<String> taxaNames, List<List<Double>> distances) throws MPIException {
         int n = taxaNames.size();
         List<Node> nodes = new ArrayList<>();
 
@@ -105,28 +72,22 @@ public class UPGMA {
             nodes.add(new Node(name));
         }
 
-        // Copy of the distance matrix
-        int size = distances.size();
-        double[][] D = new double[size][size];
-
-        // Populate the distance matrix D
-        for (int i = 0; i < size; i++) {
-            List<Double> row = distances.get(i);
-            for (int j = 0; j < row.size(); j++) {
-                D[i][j] = row.get(j);
-            }
-            // Ensure D is square
-            for (int j = row.size(); j < size; j++) {
-                D[i][j] = 0.0;
+        // Create distance matrix to share between processes
+        int matrixSize = distances.size();
+        double[][] D = new double[matrixSize][matrixSize];
+        int rank = MPI.COMM_WORLD.Rank();
+        int size = MPI.COMM_WORLD.Size();
+        
+        if (rank == 0) {
+            for (int i = 0; i < matrixSize; i++) {
+                for (int j = 0; j < matrixSize; j++) {
+                    D[i][j] = distances.get(i).get(j);
+                }
             }
         }
 
-        // Ensure D is symmetric
-        for (int i = 0; i < size; i++) {
-            for (int j = i + 1; j < size; j++) {
-                D[j][i] = D[i][j];
-            }
-        }
+        // Distribute the distance matrix among all processes
+        MPI.COMM_WORLD.Bcast(D, 0, matrixSize * matrixSize, MPI.DOUBLE, 0);
 
         List<Integer> activeIndices = new ArrayList<>();
         for (int i = 0; i < n; i++) {
@@ -136,11 +97,10 @@ public class UPGMA {
         while (activeIndices.size() > 1) {
             int m = activeIndices.size();
 
-            // Find the pair of clusters with the smallest distance
+            // Each process computes its local minimum distance
             double minDist = Double.MAX_VALUE;
             int minI = -1, minJ = -1;
-
-            for (int ii = 0; ii < m - 1; ii++) {
+            for (int ii = rank; ii < m - 1; ii += size) {
                 int idxI = activeIndices.get(ii);
                 for (int jj = ii + 1; jj < m; jj++) {
                     int idxJ = activeIndices.get(jj);
@@ -152,91 +112,75 @@ public class UPGMA {
                 }
             }
 
-            // Merge clusters[minI] and clusters[minJ]
-            Node clusterI = nodes.get(minI);
-            Node clusterJ = nodes.get(minJ);
+            // Perform reduction to get the global minimum pair
+            double[] globalMinDist = new double[1];
+            int[] globalMinI = new int[1];
+            int[] globalMinJ = new int[1];
+            MPI.COMM_WORLD.Allreduce(new double[] {minDist}, 0, globalMinDist, 0, 1, MPI.DOUBLE, MPI.MIN);
+            MPI.COMM_WORLD.Allreduce(new int[] {minI}, 0, globalMinI, 0, 1, MPI.INT, MPI.MIN);
+            MPI.COMM_WORLD.Allreduce(new int[] {minJ}, 0, globalMinJ, 0, 1, MPI.INT, MPI.MIN);
 
-            // Create new cluster
-            Node newCluster = new Node("");
-            newCluster.left = clusterI;
-            newCluster.right = clusterJ;
+            // Root process merges clusters and updates distance matrix
+            if (rank == 0) {
+                Node clusterI = nodes.get(globalMinI[0]);
+                Node clusterJ = nodes.get(globalMinJ[0]);
+                Node newCluster = new Node("");
+                newCluster.left = clusterI;
+                newCluster.right = clusterJ;
 
-            // The height of the new cluster is half the distance between merged clusters
-            double newHeight = minDist / 2.0;
-            newCluster.height = newHeight;
+                double newHeight = globalMinDist[0] / 2.0;
+                newCluster.height = newHeight;
+                newCluster.branchLengthLeft = newHeight - clusterI.height;
+                newCluster.branchLengthRight = newHeight - clusterJ.height;
+                newCluster.size = clusterI.size + clusterJ.size;
 
-            // Set branch lengths
-            newCluster.branchLengthLeft = newHeight - clusterI.height;
-            newCluster.branchLengthRight = newHeight - clusterJ.height;
+                nodes.add(newCluster);
+                int newIdx = nodes.size() - 1;
 
-            // Update size
-            newCluster.size = clusterI.size + clusterJ.size;
+                // Broadcast updated tree structure to all processes
+                MPI.COMM_WORLD.Bcast(newCluster, 0, newCluster.size, MPI.OBJECT, 0);
+                // Update active indices and distance matrix (not shown fully)
 
-            // Add new cluster to nodes
-            nodes.add(newCluster);
-            int newIdx = nodes.size() - 1;
-
-            // Resize D to add new row and column
-            int DSize = D.length;
-            // Expand D to (DSize+1) x (DSize+1)
-            double[][] newD = new double[DSize + 1][DSize + 1];
-            for (int i = 0; i < DSize; i++) {
-                for (int j = 0; j < DSize; j++) {
-                    newD[i][j] = D[i][j];
-                }
+                activeIndices.remove(Integer.valueOf(globalMinI[0]));
+                activeIndices.remove(Integer.valueOf(globalMinJ[0]));
+                activeIndices.add(newIdx);
             }
-            D = newD;
-
-            // Initialize new row and column
-            for (int i = 0; i <= DSize; i++) {
-                D[i][DSize] = 0.0;
-                D[DSize][i] = 0.0;
-            }
-
-            // Compute distances between the new cluster and other active clusters
-            for (int idxK : activeIndices) {
-                if (idxK == minI || idxK == minJ)
-                    continue;
-                Node clusterK = nodes.get(idxK);
-                double dist = (D[minI][idxK] * clusterI.size + D[minJ][idxK] * clusterJ.size)
-                               / (clusterI.size + clusterJ.size);
-
-                // Update D[newIdx][idxK] and D[idxK][newIdx]
-                D[newIdx][idxK] = dist;
-                D[idxK][newIdx] = dist;
-            }
-
-            // Mark distances of merged clusters as inactive
-            for (int i = 0; i < D.length; i++) {
-                D[minI][i] = D[i][minI] = Double.MAX_VALUE;
-                D[minJ][i] = D[i][minJ] = Double.MAX_VALUE;
-            }
-
-            // Update active indices
-            activeIndices.remove(Integer.valueOf(minI));
-            activeIndices.remove(Integer.valueOf(minJ));
-            activeIndices.add(newIdx);
         }
 
-        // The last remaining cluster is the root
-        int rootIdx = activeIndices.get(0);
-        Node root = nodes.get(rootIdx);
-
-        // Output the tree in Newick format
-        String newickTree = buildNewick(root) + ";";
-        System.out.println(newickTree);
-
-        // No need to explicitly delete the tree in Java (garbage collected)
+        // Final result at root
+        if (rank == 0) {
+            Node root = nodes.get(0);
+            String newickTree = buildNewick(root) + ";";
+            System.out.println(newickTree);
+        }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws MPIException {
+        // Initialize MPI
+        MPI.Init(args);
+        int rank = MPI.COMM_WORLD.Rank();
+        int size = MPI.COMM_WORLD.Size();
+
+        if (args.length == 0) {
+            if (rank == 0) {
+                System.out.println("Proper Usage is: java program filename");
+            }
+            MPI.Finalize();
+            System.exit(0);
+        }
+
         List<String> taxaNames = new ArrayList<>();
         List<List<Double>> distances = new ArrayList<>();
 
-        // Read the distance matrix from the file "DistanceMatrix"
-        readDistanceMatrix("DistanceMatrix", taxaNames, distances);
+        String filePath = args[0];
+        if (rank == 0) {
+            readDistanceMatrix(filePath, taxaNames, distances);
+        }
 
-        // Perform UPGMA algorithm
+        // Perform UPGMA with MPI
         UPGMA(taxaNames, distances);
+
+        // Finalize MPI
+        MPI.Finalize();
     }
 }

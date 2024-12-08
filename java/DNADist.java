@@ -47,19 +47,30 @@ public class DNADist {
     }
 
     public static void main(String[] args) throws MPIException {
-        MPI.Init(args);  // Initialize the MPI environment
-        int rank = MPI.COMM_WORLD.Rank();  // Get the rank of the process
-        int size = MPI.COMM_WORLD.Size();  // Get the total number of processes
+        // initialize MPI environment
+        MPI.Init(args);
+
+        // get mpi data
+        int rank = MPI.COMM_WORLD.Rank();
+        int size = MPI.COMM_WORLD.Size();
+
+        // timer setup
         long startTime = 0; 
-        long endTime = 0; 
-        // start timer for root process
+        long endTime = 0;
         if (rank == 0) startTime = System.currentTimeMillis();
-        // input file name
-        String input = "seq";
+
+        // argument handling
+        if (args.length == 0) {
+            System.out.println("Proper Usage is: java program filename");
+            System.exit(0);
+        }
+
+        // input file handling
+        String input = args[0];
         BufferedReader inputFile = null;
         try {
             inputFile = new BufferedReader(new FileReader(input));
-            // Read the number of sequences and their length
+            // read number of sequences and length
             String line = inputFile.readLine();
             if (line == null) {
                 System.err.println("Error: Input file is empty.");
@@ -72,8 +83,10 @@ public class DNADist {
             }
             int numSequences = Integer.parseInt(tokens[0]);
             int sequenceLength = Integer.parseInt(tokens[1]);
+
             List<Sequence> sequences = new ArrayList<>();
-            // Read the sequences
+
+            // read sequences
             for (int i = 0; i < numSequences; ++i) {
                 line = inputFile.readLine();
                 if (line == null) {
@@ -90,16 +103,15 @@ public class DNADist {
                 sequences.add(new Sequence(name, data));
             }
             inputFile.close();
-            // This section is for splitting the matrix computation work
+
+            // divide work among processes based on rank
             int rowsPerProcess = numSequences / size;
             int remainder = numSequences % size;
             int startRow = rank * rowsPerProcess + Math.min(rank, remainder);
             int endRow = (rank + 1) * rowsPerProcess + Math.min(rank + 1, remainder);
-            if (rank == size - 1) {
-                endRow = numSequences;
-            }
+            if (rank == size - 1) endRow = numSequences;
 
-            // Compute part of the matrix for this rank
+            // initialize local matrix to store computed distances for assigned rows of each rank
             double[][] localMatrix = new double[numSequences][numSequences];
             for (int i = startRow; i < endRow; ++i) {
                 for (int j = i + 1; j < numSequences; ++j) {
@@ -108,8 +120,8 @@ public class DNADist {
                     localMatrix[j][i] = distance;
                 }
             }
-            
-            // Only allocate fullMatrix on root process
+
+            // allocate full matrix on root process for collecting results
             double[][] fullMatrix = null;
             if (rank == 0) {
                 fullMatrix = new double[numSequences][numSequences];
@@ -117,24 +129,21 @@ public class DNADist {
             }
 
             // non-blocking communication
-            Request[] requests = new Request[numSequences];  // Requests for rows
-
+            // send computed rows from non-root processes to root process
             if (rank != 0) {
-                // Non-root ranks send rows
                 for (int i = 0; i < (endRow - startRow); i++) {
                     MPI.COMM_WORLD.Isend(localMatrix[i], 0, numSequences, MPI.DOUBLE, 0, startRow + i);
                 }
             } else {
-                // Root process receives its own data into fullMatrix
+                // root process copies its own data to full matrix
                 for (int i = startRow; i < endRow; i++) {
                     fullMatrix[i] = Arrays.copyOf(localMatrix[i - startRow], numSequences);
                 }
-
-                // Root process: receive data from other ranks
+                // root process receives data from other processes
+                Request[] requests = new Request[numSequences];
                 for (int src = 1; src < size; src++) {
                     int startRowRecv = src * rowsPerProcess + Math.min(src, remainder);
                     int endRowRecv = (src + 1) * rowsPerProcess + Math.min(src + 1, remainder);
-
                     for (int i = startRowRecv; i < endRowRecv; i++) {
                         double[] rowBuffer = new double[numSequences];
                         requests[i] = MPI.COMM_WORLD.Irecv(rowBuffer, 0, numSequences, MPI.DOUBLE, src, i);
@@ -144,9 +153,8 @@ public class DNADist {
                 }
             }
 
-            // Print the matrix on root process
+            // root process prints final distance matrix
             if (rank == 0) {
-                // Print the full distance matrix
                 DecimalFormat df = new DecimalFormat("0.0000");
                 for (int i = 0; i < numSequences; ++i) {
                     System.out.printf("%10s ", sequences.get(i).name);
@@ -160,30 +168,20 @@ public class DNADist {
                     System.out.println();
                 }
             }
-        } catch (FileNotFoundException e) {
-            System.err.println("Error: Could not open the input file 'seq'.");
-            e.printStackTrace();
-        } catch (IOException e) {
-            System.err.println("Error reading the input file.");
-            e.printStackTrace();
-        } catch (NumberFormatException e) {
-            System.err.println("Error: Invalid number format in input file.");
-            e.printStackTrace();
+        } catch (Exception e) {
+            System.err.println("Error handling file or data: " + e.getMessage());
         } finally {
-            if (inputFile != null) {
-                try {
-                    inputFile.close();
-                } catch (IOException e) {
-                    // Ignore
-                }
-            }
+            if (inputFile != null) try { inputFile.close(); } catch (IOException e) { }
         }
-        // stop timer and print time for root process
+
+        // measure and print elapsed time
         if (rank == 0) {
             endTime = System.currentTimeMillis();
             long elapsedTime = endTime - startTime;
             System.err.printf("Elapsed time: %.3f seconds %n", elapsedTime / 1000.0);
         }
+
+        // end all processes
         MPI.Finalize();
     }
 }
