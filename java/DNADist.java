@@ -2,6 +2,14 @@ import mpi.*;
 import java.io.*;
 import java.util.*;
 import java.text.DecimalFormat;
+
+/**
+ * Parallelized version of DNADist using MPI Java and the Jukes Cantor model to compute the distance between each sequence in a DNA matrix.
+ * 
+ * By Davis Zhong
+ * 12/09/2024
+ */
+
 class Sequence {
     String name;
     String data;
